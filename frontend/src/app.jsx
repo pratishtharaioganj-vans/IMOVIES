@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import "./app.css";
 
-const API = "http://localhost:5000/api";
+const API = "https://imovies-742a.onrender.com/api";
 
 function App() {
   const [token, setToken] = useState(
