@@ -1,10 +1,9 @@
-const path = require('path');
-const express = require('express');
-const cors = require('cors');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const loki = require('lokijs');
-require('dotenv').config();
+const express = require("express");
+const cors = require("cors");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const { MongoClient } = require("mongodb");
+require("dotenv").config();
 
 const app = express();
 
@@ -12,9 +11,9 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 5000;
+const MONGODB_URI = process.env.MONGODB_URI;
+const JWT_SECRET = process.env.JWT_SECRET;
 
-
-// Database collections
 let db;
 let users;
 let movies;
@@ -22,402 +21,372 @@ let bookings;
 
 // Authentication middleware
 const auth = (req, res, next) => {
-    const token = req.header('x-auth-token');
+  const token = req.header("x-auth-token");
 
-    if (!token) {
-        return res.status(401).json({
-            msg: 'Authorization denied'
-        });
-    }
+  if (!token) {
+    return res.status(401).json({ msg: "No token, authorization denied" });
+  }
 
-    try {
-        const decoded = jwt.verify(
-            token,
-            process.env.JWT_SECRET || 'supersecretkey123'
-        );
-
-        req.user = decoded.user;
-        next();
-    } catch (err) {
-        return res.status(400).json({
-            msg: 'Token validation failed'
-        });
-    }
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded.user;
+    next();
+  } catch (error) {
+    return res.status(401).json({ msg: "Invalid token" });
+  }
 };
 
+// Generate the next numeric ID
+async function getNextId(collection) {
+  const lastDocument = await collection
+    .find({})
+    .sort({ id: -1 })
+    .limit(1)
+    .next();
+
+  return lastDocument ? lastDocument.id + 1 : 1;
+}
+
 // Register
-app.post('/api/auth/register', async (req, res) => {
+app.post("/api/auth/register", async (req, res) => {
+  try {
     const { name, email, password } = req.body;
 
-    try {
-        if (!name || !email || !password) {
-            return res.status(400).json({
-                msg: 'Please provide name, email and password'
-            });
-        }
-
-        const existingUser = users.findOne({ email });
-
-        if (existingUser) {
-            return res.status(400).json({
-                msg: 'User already exists'
-            });
-        }
-
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-
-        const user = users.insert({
-            name,
-            email,
-            password: hashedPassword
-        });
-
-        const payload = {
-            user: { id: user.$loki }
-        };
-
-        jwt.sign(
-            payload,
-            process.env.JWT_SECRET || 'supersecretkey123',
-            { expiresIn: '1h' },
-            (err, token) => {
-                if (err) {
-                    return res.status(500).json({
-                        msg: 'Could not create token'
-                    });
-                }
-
-                res.json({
-                    token,
-                    user: { name, email }
-                });
-            }
-        );
-    } catch (err) {
-        console.error('Registration error:', err);
-
-        res.status(500).json({
-            msg: 'Server Error'
-        });
+    if (!name || !email || !password) {
+      return res.status(400).json({
+        msg: "Please provide name, email and password",
+      });
     }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const existingUser = await users.findOne({
+      email: normalizedEmail,
+    });
+
+    if (existingUser) {
+      return res.status(400).json({
+        msg: "User already exists",
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const user = {
+      name: name.trim(),
+      email: normalizedEmail,
+      password: hashedPassword,
+      createdAt: new Date(),
+    };
+
+    const result = await users.insertOne(user);
+
+    const token = jwt.sign(
+      {
+        user: {
+          id: result.insertedId.toString(),
+        },
+      },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.status(201).json({
+      token,
+      user: {
+        name: user.name,
+        email: user.email,
+      },
+    });
+  } catch (error) {
+    console.error("Registration error:", error);
+    res.status(500).json({ msg: "Registration failed" });
+  }
 });
 
 // Login
-app.post('/api/auth/login', async (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
+  try {
     const { email, password } = req.body;
 
-    try {
-        const user = users.findOne({ email });
-
-        if (!user) {
-            return res.status(400).json({
-                msg: 'Invalid Credentials'
-            });
-        }
-
-        const isMatch = await bcrypt.compare(
-            password,
-            user.password
-        );
-
-        if (!isMatch) {
-            return res.status(400).json({
-                msg: 'Invalid Credentials'
-            });
-        }
-
-        const payload = {
-            user: { id: user.$loki }
-        };
-
-        jwt.sign(
-            payload,
-            process.env.JWT_SECRET || 'supersecretkey123',
-            { expiresIn: '1h' },
-            (err, token) => {
-                if (err) {
-                    return res.status(500).json({
-                        msg: 'Could not create token'
-                    });
-                }
-
-                res.json({
-                    token,
-                    user: {
-                        name: user.name,
-                        email: user.email
-                    }
-                });
-            }
-        );
-    } catch (err) {
-        console.error('Login error:', err);
-
-        res.status(500).json({
-            msg: 'Server Error'
-        });
+    if (!email || !password) {
+      return res.status(400).json({
+        msg: "Please provide email and password",
+      });
     }
+
+    const user = await users.findOne({
+      email: email.trim().toLowerCase(),
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        msg: "Invalid credentials",
+      });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+
+    if (!isMatch) {
+      return res.status(400).json({
+        msg: "Invalid credentials",
+      });
+    }
+
+    const token = jwt.sign(
+      {
+        user: {
+          id: user._id.toString(),
+        },
+      },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    res.json({
+      token,
+      user: {
+        name: user.name,
+        email: user.email,
+      },
+    });
+  } catch (error) {
+    console.error("Login error:", error);
+    res.status(500).json({ msg: "Login failed" });
+  }
 });
 
 // Get movies
-app.get('/api/movies', (req, res) => {
-    res.json(movies.find());
+app.get("/api/movies", async (req, res) => {
+  try {
+    const movieList = await movies.find({}).sort({ id: 1 }).toArray();
+    res.json(movieList);
+  } catch (error) {
+    console.error("Fetch movies error:", error);
+    res.status(500).json({ msg: "Unable to fetch movies" });
+  }
 });
 
 // Seed movies
-app.get('/api/movies/seed', (req, res) => {
-    try {
-        const seedMovies = [
-            {
-                title: 'Inception',
-                genre: 'Sci-Fi',
-                duration: 148,
-                showtimes: ['12:00 PM', '3:30 PM', '7:00 PM'],
-                availableSeats: 40
-            },
-            {
-                title: 'The Dark Knight',
-                genre: 'Action',
-                duration: 152,
-                showtimes: ['1:00 PM', '4:30 PM', '8:00 PM'],
-                availableSeats: 35
-            },
-            {
-                title: 'Interstellar',
-                genre: 'Adventure',
-                duration: 169,
-                showtimes: ['11:00 AM', '5:00 PM'],
-                availableSeats: 28
-            }
-        ];
+app.get("/api/movies/seed", async (req, res) => {
+  try {
+    const existingCount = await movies.countDocuments();
 
-        // Do not overwrite movies if they already exist.
-        if (movies.count() > 0) {
-            return res.json({
-                msg: 'Movies already exist. Existing data was preserved.'
-            });
-        }
-
-        seedMovies.forEach(movie => movies.insert(movie));
-
-        db.saveDatabase(err => {
-            if (err) {
-                console.error('Database save error:', err);
-
-                return res.status(500).json({
-                    msg: 'Could not save movies'
-                });
-            }
-
-            res.json({
-                msg: 'Movies added and saved successfully!'
-            });
-        });
-    } catch (err) {
-        console.error('Movie seeding error:', err);
-
-        res.status(500).json({
-            msg: 'Server Error'
-        });
+    if (existingCount > 0) {
+      return res.json({
+        msg: "Movies already exist",
+      });
     }
+
+    const seedMovies = [
+      {
+        id: 1,
+        title: "Inception",
+        genre: "Sci-Fi",
+        duration: 148,
+        showtimes: ["12:00 PM", "3:30 PM", "7:00 PM"],
+        availableSeats: 40,
+      },
+      {
+        id: 2,
+        title: "The Dark Knight",
+        genre: "Action",
+        duration: 152,
+        showtimes: ["1:00 PM", "4:30 PM", "8:00 PM"],
+        availableSeats: 35,
+      },
+      {
+        id: 3,
+        title: "Interstellar",
+        genre: "Adventure",
+        duration: 169,
+        showtimes: ["11:00 AM", "5:00 PM"],
+        availableSeats: 28,
+      },
+    ];
+
+    await movies.insertMany(seedMovies);
+
+    res.json({
+      msg: "Movies added and saved successfully!",
+    });
+  } catch (error) {
+    console.error("Seed error:", error);
+    res.status(500).json({ msg: "Unable to seed movies" });
+  }
 });
 
 // Create booking
-app.post('/api/bookings', auth, (req, res) => {
+app.post("/api/bookings", auth, async (req, res) => {
+  try {
     const { movieId, showtime, seatsBooked } = req.body;
 
-    try {
-        const numberOfSeats = Number(seatsBooked);
-        const id = Number(movieId);
+    const id = Number(movieId);
+    const seatCount = Number(seatsBooked);
 
-        if (
-            !Number.isInteger(numberOfSeats) ||
-            numberOfSeats < 1
-        ) {
-            return res.status(400).json({
-                msg: 'Please select a valid number of seats'
-            });
-        }
-
-        const movie = movies.findOne({ $loki: id });
-
-        if (!movie) {
-            return res.status(404).json({
-                msg: 'Movie not found'
-            });
-        }
-
-        if (!movie.showtimes.includes(showtime)) {
-            return res.status(400).json({
-                msg: 'Invalid showtime'
-            });
-        }
-
-        if (movie.availableSeats < numberOfSeats) {
-            return res.status(400).json({
-                msg: 'Not enough seats available'
-            });
-        }
-
-        movie.availableSeats -= numberOfSeats;
-        movies.update(movie);
-
-        const booking = bookings.insert({
-            user: req.user.id,
-            movie: {
-                title: movie.title,
-                genre: movie.genre
-            },
-            showtime,
-            seatsBooked: numberOfSeats
-        });
-
-        db.saveDatabase(err => {
-            if (err) {
-                console.error('Booking save error:', err);
-
-                // Roll back the in-memory changes if saving fails.
-                movies.remove(movie);
-                movies.insert({
-                    ...movie,
-                    availableSeats:
-                        movie.availableSeats + numberOfSeats
-                });
-                bookings.remove(booking);
-
-                return res.status(500).json({
-                    msg: 'Booking could not be saved'
-                });
-            }
-
-            res.json(booking);
-        });
-    } catch (err) {
-        console.error('Booking error:', err);
-
-        res.status(500).json({
-            msg: 'Server Error'
-        });
+    if (
+      !Number.isSafeInteger(id) ||
+      !Number.isInteger(seatCount) ||
+      seatCount < 1 ||
+      seatCount > 10 ||
+      !showtime
+    ) {
+      return res.status(400).json({
+        msg: "Invalid movie, showtime or seat count",
+      });
     }
+
+    const movie = await movies.findOne({ id });
+
+    if (!movie) {
+      return res.status(404).json({ msg: "Movie not found" });
+    }
+
+    if (!movie.showtimes.includes(showtime)) {
+      return res.status(400).json({ msg: "Invalid showtime" });
+    }
+
+    // Atomically reserve seats to prevent overbooking
+    const updatedMovie = await movies.findOneAndUpdate(
+      {
+        id,
+        availableSeats: { $gte: seatCount },
+      },
+      {
+        $inc: { availableSeats: -seatCount },
+      },
+      { returnDocument: "after" }
+    );
+
+    if (!updatedMovie) {
+      return res.status(400).json({
+        msg: "Not enough seats available",
+      });
+    }
+
+    const booking = {
+      id: await getNextId(bookings),
+      user: req.user.id,
+      movie: {
+        id: movie.id,
+        title: movie.title,
+        genre: movie.genre,
+      },
+      showtime,
+      seatsBooked: seatCount,
+      createdAt: new Date(),
+    };
+
+    await bookings.insertOne(booking);
+
+    res.status(201).json({
+      msg: "Booking successful",
+      booking,
+    });
+  } catch (error) {
+    console.error("Booking error:", error);
+    res.status(500).json({ msg: "Booking failed" });
+  }
 });
 
 // Get current user's bookings
-app.get('/api/bookings/my-bookings', auth, (req, res) => {
-    try {
-        const userBookings = bookings.find({
-            user: req.user.id
-        });
+app.get("/api/bookings/my-bookings", auth, async (req, res) => {
+  try {
+    const userBookings = await bookings
+      .find({ user: req.user.id })
+      .sort({ id: -1 })
+      .toArray();
 
-        res.json(userBookings);
-    } catch (err) {
-        console.error('Fetch bookings error:', err);
-
-        res.status(500).json({
-            msg: 'Server Error'
-        });
-    }
+    res.json(userBookings);
+  } catch (error) {
+    console.error("Fetch bookings error:", error);
+    res.status(500).json({ msg: "Unable to fetch bookings" });
+  }
 });
 
 // Cancel booking
-app.delete('/api/bookings/:id', auth, (req, res) => {
-    try {
-        const bookingId = Number(req.params.id);
+app.delete("/api/bookings/:id", auth, async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
 
-        const booking = bookings.findOne({
-            $loki: bookingId,
-            user: req.user.id
-        });
-
-        if (!booking) {
-            return res.status(404).json({
-                msg: 'Booking not found'
-            });
-        }
-
-        const movie = movies.findOne({
-            title: booking.movie.title
-        });
-
-        if (movie) {
-            movie.availableSeats += booking.seatsBooked;
-            movies.update(movie);
-        }
-
-        bookings.remove(booking);
-
-        db.saveDatabase(err => {
-            if (err) {
-                console.error('Cancellation save error:', err);
-
-                return res.status(500).json({
-                    msg: 'Cancellation could not be saved'
-                });
-            }
-
-            res.json({
-                msg: 'Booking cancelled successfully!'
-            });
-        });
-    } catch (err) {
-        console.error('Cancellation error:', err);
-
-        res.status(500).json({
-            msg: 'Server Error'
-        });
+    if (!Number.isSafeInteger(bookingId)) {
+      return res.status(400).json({ msg: "Invalid booking ID" });
     }
+
+    const booking = await bookings.findOne({
+      id: bookingId,
+      user: req.user.id,
+    });
+
+    if (!booking) {
+      return res.status(404).json({
+        msg: "Booking not found",
+      });
+    }
+
+    // Restore seats before deleting the booking
+    const result = await bookings.deleteOne({
+      _id: booking._id,
+      user: req.user.id,
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({
+        msg: "Booking not found",
+      });
+    }
+
+    await movies.updateOne(
+      { id: booking.movie.id },
+      { $inc: { availableSeats: booking.seatsBooked } }
+    );
+
+    res.json({ msg: "Booking cancelled successfully" });
+  } catch (error) {
+    console.error("Cancellation error:", error);
+    res.status(500).json({ msg: "Cancellation failed" });
+  }
 });
 
-// Backend home route
-app.get('/', (req, res) => {
-    res.send('IMOVIES Backend is running successfully!');
+// Home route
+app.get("/", (req, res) => {
+  res.send("IMOVIES Backend is running successfully!");
 });
 
-// Initialize permanent database
-db = new loki(path.join(__dirname, 'imovies.db'), {
-    adapter: new loki.LokiFsAdapter(),
+// Connect to MongoDB
+async function startServer() {
+  try {
+    if (!MONGODB_URI) {
+      throw new Error("MONGODB_URI is missing in environment variables");
+    }
 
-    autoload: true,
+    if (!JWT_SECRET) {
+      throw new Error("JWT_SECRET is missing in environment variables");
+    }
 
-    autoloadCallback: function (err) {
-        if (err) {
-            console.error('Database loading warning:', err);
-        }
+    const client = new MongoClient(MONGODB_URI);
 
-        // Load saved collections or create new ones.
-        users = db.getCollection('users') ||
-            db.addCollection('users');
+    await client.connect();
 
-        movies = db.getCollection('movies') ||
-            db.addCollection('movies');
+    db = client.db("imovies");
 
-        bookings = db.getCollection('bookings') ||
-            db.addCollection('bookings');
+    users = db.collection("users");
+    movies = db.collection("movies");
+    bookings = db.collection("bookings");
 
-        // Save the initialized database.
-        db.saveDatabase(saveErr => {
-            if (saveErr) {
-                console.error(
-                    'Database initialization save error:',
-                    saveErr
-                );
+    await users.createIndex({ email: 1 }, { unique: true });
+    await movies.createIndex({ id: 1 }, { unique: true });
+    await bookings.createIndex({ id: 1 }, { unique: true });
 
-                return;
-            }
+    console.log("MongoDB connected successfully!");
 
-            console.log(
-                'Permanent database connected successfully!'
-            );
+    app.listen(PORT, () => {
+      console.log(`Server successfully started on port ${PORT}`);
+    });
+  } catch (error) {
+    console.error("Server startup failed:", error.message);
+    process.exit(1);
+  }
+}
 
-            // Start the API only after the database is ready.
-            app.listen(PORT, () => {
-                console.log(
-                    `Server successfully started on port ${PORT}`
-                );
-            });
-        });
-    },
-
-    autosave: true,
-    autosaveInterval: 4000
-});
+startServer();

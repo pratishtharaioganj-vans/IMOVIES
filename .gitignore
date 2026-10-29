@@ -2,3 +2,4 @@
 **/.env
 **/imovies.db
 **/dist/
+backend/server-backup.js
