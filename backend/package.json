@@ -1,0 +1,17 @@
+{
+"name": "imovies-backend",
+"version": "1.0.0",
+"description": "IMOVIES backend",
+"main": "server.js",
+"scripts": {
+"start": "node server.js"
+},
+"dependencies": {
+"express": "*",
+"cors": "*",
+"bcryptjs": "*",
+"jsonwebtoken": "*",
+"lokijs": "*",
+"dotenv": "*"
+}
+}
