@@ -376,7 +376,44 @@ async function startServer() {
 
     await users.createIndex({ email: 1 }, { unique: true });
     await movies.createIndex({ id: 1 }, { unique: true });
-    await bookings.createIndex({ id: 1 }, { unique: true });
+    await bookings.createIndex({ id: 1 }, { unique: true }); 
+
+    // Automatically add movies if database is empty
+const movieCount = await movies.countDocuments();
+
+if (movieCount === 0) {
+  const defaultMovies = [
+    {
+      id: 1,
+      title: "Inception",
+      genre: "Sci-Fi",
+      duration: 148,
+      showtimes: ["12:00 PM", "3:30 PM", "7:00 PM"],
+      availableSeats: 40,
+    },
+    {
+      id: 2,
+      title: "The Dark Knight",
+      genre: "Action",
+      duration: 152,
+      showtimes: ["1:00 PM", "4:30 PM", "8:00 PM"],
+      availableSeats: 35,
+    },
+    {
+      id: 3,
+      title: "Interstellar",
+      genre: "Adventure",
+      duration: 169,
+      showtimes: ["11:00 AM", "5:00 PM"],
+      availableSeats: 28,
+    },
+  ];
+
+  await movies.insertMany(defaultMovies);
+  console.log("Default movies added automatically!");
+} else {
+  console.log("Movies already exist. No changes made.");
+}
 
     console.log("MongoDB connected successfully!");
 
